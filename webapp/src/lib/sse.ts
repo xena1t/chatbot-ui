@@ -36,13 +36,14 @@ export async function streamSSE(
   options?: { signal?: AbortSignal }
 ): Promise<void> {
   const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 180000); 
   if (options?.signal) {
     const abortSignal = options.signal;
     if (abortSignal.aborted) {
       controller.abort();
     } else {
       abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
-    }
+    } 
   }
 
   const response = await fetch(url, {
@@ -81,6 +82,7 @@ export async function streamSSE(
       }
     }
   } finally {
+     clearTimeout(timeout);
     controller.abort();
   }
 }
