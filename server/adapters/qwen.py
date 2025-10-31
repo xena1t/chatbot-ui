@@ -5,13 +5,14 @@ from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForVision2Seq,
+    AutoProcessor,
+    AutoTokenizer,
+    TextIteratorStreamer,
+)
 from transformers.modeling_utils import PreTrainedModel
-
-try:
-    from transformers import Qwen2VLForConditionalGeneration
-except ImportError:  # pragma: no cover - optional vision dependency
-    Qwen2VLForConditionalGeneration = None  # type: ignore[assignment]
 
 from ..utils.env import get_settings
 
@@ -20,9 +21,11 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class _ModelBundle:
-    tokenizer: AutoTokenizer
+    processor: Any
+    tokenizer: Any
     model: PreTrainedModel
     device: Optional[str]
+    uses_vision_language: bool
 
 
 _MODEL_CACHE: Dict[str, _ModelBundle] = {}
@@ -84,9 +87,6 @@ async def _load_model(model_name: str) -> _ModelBundle:
         settings = get_settings()
 
         def _load() -> _ModelBundle:
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_name, trust_remote_code=True
-            )
             load_kwargs: Dict[str, Any] = {"trust_remote_code": True}
             target_device = settings.transformers_device
             if target_device == "auto":
@@ -101,16 +101,17 @@ async def _load_model(model_name: str) -> _ModelBundle:
             uses_vision_language = "vl" in lower_name or "vision" in lower_name
 
             if uses_vision_language:
-                if Qwen2VLForConditionalGeneration is None:
-                    raise RuntimeError(
-                        "Qwen2VLForConditionalGeneration is not available; ensure your "
-                        "transformers installation supports Qwen3-VL models."
-                    )
-                model = Qwen2VLForConditionalGeneration.from_pretrained(
-                    model_name, **load_kwargs
+                processor = AutoProcessor.from_pretrained(
+                    model_name, trust_remote_code=True
                 )
+                model = AutoModelForVision2Seq.from_pretrained(model_name, **load_kwargs)
+                tokenizer = getattr(processor, "tokenizer", processor)
             else:
+                processor = AutoTokenizer.from_pretrained(
+                    model_name, trust_remote_code=True
+                )
                 model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+                tokenizer = processor
             bundle_device: Optional[str]
             if target_device != "auto":
                 model.to(target_device)
@@ -118,7 +119,13 @@ async def _load_model(model_name: str) -> _ModelBundle:
             else:
                 bundle_device = "cuda" if torch.cuda.is_available() else "cpu"
             model.eval()
-            return _ModelBundle(tokenizer=tokenizer, model=model, device=bundle_device)
+            return _ModelBundle(
+                processor=processor,
+                tokenizer=tokenizer,
+                model=model,
+                device=bundle_device,
+                uses_vision_language=uses_vision_language,
+            )
 
         bundle = await asyncio.to_thread(_load)
         async with _CACHE_LOCK:
@@ -193,10 +200,16 @@ async def stream_chat_completion(
 
     prompt = _format_prompt(messages, image_urls)
 
+    processor = bundle.processor
+
+    def _encode() -> Dict[str, Any]:
+        if bundle.uses_vision_language:
+            return processor(text=prompt, return_tensors="pt")
+        return processor(prompt, return_tensors="pt", add_special_tokens=True)
+
+    encoded = await asyncio.to_thread(_encode)
+
     tokenizer = bundle.tokenizer
-    encoded = await asyncio.to_thread(
-        lambda: tokenizer(prompt, return_tensors="pt", add_special_tokens=True)
-    )
 
     if bundle.device:
         encoded = {key: value.to(bundle.device) for key, value in encoded.items()}
