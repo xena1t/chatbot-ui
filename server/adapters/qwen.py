@@ -2,7 +2,8 @@ import asyncio
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
+from pathlib import Path
+from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Sequence
 
 import torch
 from transformers import (
@@ -15,6 +16,11 @@ from transformers import (
 from transformers.modeling_utils import PreTrainedModel
 
 from ..utils.env import get_settings
+
+try:
+    from PIL import Image
+except ImportError as exc:  # pragma: no cover - pillow should be installed
+    raise RuntimeError("Pillow is required for vision-language models") from exc
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +60,9 @@ def _ensure_text(content: Any) -> str:
     return str(content)
 
 
-def _format_prompt(messages: List[Dict[str, Any]], image_urls: Optional[Iterable[str]]) -> str:
+def _format_prompt(
+    messages: List[Dict[str, Any]], image_refs: Optional[Iterable[str]]
+) -> str:
     segments: List[str] = []
     for message in messages:
         role = message.get("role", "user")
@@ -62,13 +70,75 @@ def _format_prompt(messages: List[Dict[str, Any]], image_urls: Optional[Iterable
         text = _ensure_text(message.get("content"))
         segments.append(f"{role_label}: {text}" if text else f"{role_label}:")
 
-    urls = list(image_urls or [])
-    if urls:
+    refs = list(image_refs or [])
+    if refs:
         segments.append("User shared the following image frames:")
-        segments.extend(urls)
+        segments.extend(refs)
 
     segments.append("Assistant:")
     return "\n".join(segments).strip() + "\n"
+
+
+def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    conversation: List[Dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        if role not in {"user", "assistant", "system"}:
+            role = "user"
+        text = _ensure_text(message.get("content"))
+        content: List[Dict[str, Any]] = []
+        if text:
+            content.append({"type": "text", "text": text})
+        if role == "system" and not content:
+            continue
+        conversation.append({"role": role, "content": content})
+    return conversation
+
+        bundle = await asyncio.to_thread(_load)
+        async with _CACHE_LOCK:
+            _MODEL_CACHE[model_name] = bundle
+        return bundle
+
+def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
+    images: List[Any] = []
+    for frame_path in frame_paths:
+        with Image.open(frame_path) as image:
+            images.append(image.convert("RGB"))
+    return images
+
+
+def _prepare_multimodal_inputs(
+    processor: Any,
+    messages: List[Dict[str, Any]],
+    frame_paths: Sequence[Path],
+) -> Dict[str, Any]:
+    conversation = _build_conversation(messages)
+    images = _load_images(frame_paths)
+
+    if images:
+        if not conversation or conversation[-1]["role"] != "user":
+            conversation.append({"role": "user", "content": []})
+        existing_content = conversation[-1].setdefault("content", [])
+        image_items = [{"type": "image", "image": image} for image in images]
+        conversation[-1]["content"] = image_items + existing_content
+
+    if hasattr(processor, "apply_chat_template"):
+        prompt = processor.apply_chat_template(
+            conversation,
+            tokenize=False,
+            add_generation_prompt=True,
+        )
+        processor_kwargs: Dict[str, Any] = {"text": [prompt], "return_tensors": "pt"}
+        if images:
+            processor_kwargs["images"] = images
+        return processor(**processor_kwargs)
+
+    logger.warning("Processor missing chat template; falling back to text-only encoding")
+    prompt = _format_prompt(
+        messages,
+        [path.as_posix() for path in frame_paths],
+    )
+    return processor(prompt, return_tensors="pt", add_special_tokens=True)
 
 
 async def _load_model(model_name: str) -> _ModelBundle:
@@ -190,7 +260,7 @@ def _build_generate_kwargs(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 async def stream_chat_completion(
     messages: List[Dict[str, Any]],
     params: Optional[Dict[str, Any]] = None,
-    image_urls: Optional[Iterable[str]] = None,
+    image_paths: Optional[Iterable[Path]] = None,
     model: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     settings = get_settings()
@@ -198,13 +268,19 @@ async def stream_chat_completion(
 
     bundle = await _load_model(model_name)
 
-    prompt = _format_prompt(messages, image_urls)
-
     processor = bundle.processor
 
     def _encode() -> Dict[str, Any]:
-        if bundle.uses_vision_language:
-            return processor(text=prompt, return_tensors="pt")
+        if bundle.uses_vision_language and image_paths:
+            return _prepare_multimodal_inputs(
+                processor,
+                messages,
+                list(image_paths),
+            )
+        prompt = _format_prompt(
+            messages,
+            [path.as_posix() for path in image_paths] if image_paths else None,
+        )
         return processor(prompt, return_tensors="pt", add_special_tokens=True)
 
     encoded = await asyncio.to_thread(_encode)
