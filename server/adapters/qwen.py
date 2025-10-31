@@ -94,6 +94,10 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
+        bundle = await asyncio.to_thread(_load)
+        async with _CACHE_LOCK:
+            _MODEL_CACHE[model_name] = bundle
+        return bundle
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
