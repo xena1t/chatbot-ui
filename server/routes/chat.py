@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, status
-import httpx
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -27,6 +26,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list)
     params: Optional[Dict[str, Any]] = None
     video_url: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _resolve_static_path(static_url: str) -> Path:
@@ -100,14 +100,12 @@ async def chat_stream(request: Request, payload: ChatRequest):
                 messages=messages,
                 params=payload.params,
                 image_urls=model_frame_urls or None,
+                model=payload.model,
             ):
                 if await request.is_disconnected():
                     logger.info("Client disconnected from stream")
                     break
                 yield _format_sse(event)
-        except httpx.HTTPError as exc:
-            logger.error("HTTP error while talking to vLLM: %s", exc)
-            yield _format_sse({"event": "error", "message": "Upstream error"})
         except Exception as exc:  # pragma: no cover - unexpected
             logger.exception("Unexpected error during streaming")
             yield _format_sse({"event": "error", "message": str(exc)})
