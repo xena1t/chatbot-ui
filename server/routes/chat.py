@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, status
-import httpx
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -107,9 +106,6 @@ async def chat_stream(request: Request, payload: ChatRequest):
                     logger.info("Client disconnected from stream")
                     break
                 yield _format_sse(event)
-        except httpx.HTTPError as exc:
-            logger.error("HTTP error while talking to vLLM: %s", exc)
-            yield _format_sse({"event": "error", "message": "Upstream error"})
         except Exception as exc:  # pragma: no cover - unexpected
             logger.exception("Unexpected error during streaming")
             yield _format_sse({"event": "error", "message": str(exc)})

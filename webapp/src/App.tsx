@@ -249,7 +249,7 @@ const App: React.FC = () => {
             "a Qwen3-VL model"
           }
           {" "}
-          via vLLM.
+          powered by 🤗 Transformers.
         </p>
       </header>
 
