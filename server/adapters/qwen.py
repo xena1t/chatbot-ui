@@ -72,10 +72,11 @@ async def stream_chat_completion(
     messages: List[Dict[str, Any]],
     params: Optional[Dict[str, Any]] = None,
     image_urls: Optional[Iterable[str]] = None,
+    model: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     settings = get_settings()
     request_payload: Dict[str, Any] = {
-        "model": settings.model_name,
+        "model": model or settings.model_name,
         "stream": True,
         "messages": _merge_images_into_messages(messages, image_urls),
     }

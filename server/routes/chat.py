@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list)
     params: Optional[Dict[str, Any]] = None
     video_url: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _resolve_static_path(static_url: str) -> Path:
@@ -100,6 +101,7 @@ async def chat_stream(request: Request, payload: ChatRequest):
                 messages=messages,
                 params=payload.params,
                 image_urls=model_frame_urls or None,
+                model=payload.model,
             ):
                 if await request.is_disconnected():
                     logger.info("Client disconnected from stream")
