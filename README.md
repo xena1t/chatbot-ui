@@ -81,17 +81,24 @@ and `torch`), and sets the entrypoint to `run_all.sh`.
 
 ## Running locally (GPU required)
 
-1. Install [ffmpeg](https://ffmpeg.org/), Python 3.10+, and Node.js 18+.
+1. Install [ffmpeg](https://ffmpeg.org/), Python 3.10+, and Node.js 20+.
+   - On Debian/Ubuntu you can run:
+     ```bash
+     sudo apt-get update
+     sudo apt-get install -y ffmpeg
+     curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+     sudo apt-get install -y nodejs
+     ```
 2. Install server dependencies:
    ```bash
    pip install -r server/requirements.txt
    ```
 3. Build the frontend assets:
    ```bash
-   cd webapp
-   npm install
-   npm run build
-   ```
+    cd webapp
+    npm install
+    npm run build
+    ```
 4. Launch the stack:
    ```bash
    cd ..

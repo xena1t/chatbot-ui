@@ -30,7 +30,8 @@ class _ModelBundle:
     processor: Any
     tokenizer: Any
     model: PreTrainedModel
-    device: Optional[str]
+    device: Optional[torch.device]
+    dtype: Optional[torch.dtype]
     uses_vision_language: bool
 
 
@@ -94,10 +95,6 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
-        bundle = await asyncio.to_thread(_load)
-        async with _CACHE_LOCK:
-            _MODEL_CACHE[model_name] = bundle
-        return bundle
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
@@ -182,18 +179,33 @@ async def _load_model(model_name: str) -> _ModelBundle:
                 )
                 model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
                 tokenizer = processor
-            bundle_device: Optional[str]
             if target_device != "auto":
                 model.to(target_device)
-                bundle_device = target_device
+
+            try:
+                reference_parameter = next(model.parameters())
+            except StopIteration:  # pragma: no cover - defensive, models always have params
+                reference_parameter = None
+
+            bundle_device: Optional[torch.device]
+            bundle_dtype: Optional[torch.dtype]
+            if target_device != "auto":
+                bundle_device = torch.device(target_device)
+                bundle_dtype = reference_parameter.dtype if reference_parameter else None
             else:
-                bundle_device = "cuda" if torch.cuda.is_available() else "cpu"
+                if reference_parameter is not None:
+                    bundle_device = reference_parameter.device
+                    bundle_dtype = reference_parameter.dtype
+                else:
+                    bundle_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+                    bundle_dtype = torch.float16 if bundle_device.type == "cuda" else torch.float32
             model.eval()
             return _ModelBundle(
                 processor=processor,
                 tokenizer=tokenizer,
                 model=model,
                 device=bundle_device,
+                dtype=bundle_dtype,
                 uses_vision_language=uses_vision_language,
             )
 
@@ -287,8 +299,30 @@ async def stream_chat_completion(
 
     tokenizer = bundle.tokenizer
 
-    if bundle.device:
-        encoded = {key: value.to(bundle.device) for key, value in encoded.items()}
+    try:
+        model_device = bundle.device or next(bundle.model.parameters()).device
+    except StopIteration:  # pragma: no cover - defensive
+        model_device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+
+    model_dtype = bundle.dtype
+    if model_dtype is None:
+        try:
+            model_dtype = next(bundle.model.parameters()).dtype
+        except StopIteration:  # pragma: no cover - defensive
+            model_dtype = torch.float16 if model_device.type == "cuda" else torch.float32
+
+    moved_inputs: Dict[str, Any] = {}
+    for key, value in encoded.items():
+        if hasattr(value, "to"):
+            to_kwargs: Dict[str, Any] = {"device": model_device}
+            if isinstance(model_device, torch.device) and model_device.type == "cuda":
+                to_kwargs["non_blocking"] = True
+            if isinstance(value, torch.Tensor) and value.is_floating_point():
+                to_kwargs["dtype"] = model_dtype
+            moved_inputs[key] = value.to(**to_kwargs)
+        else:
+            moved_inputs[key] = value
+    encoded = moved_inputs
 
     streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
     generate_kwargs = _build_generate_kwargs(params)

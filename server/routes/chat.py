@@ -143,6 +143,8 @@ async def chat_stream(request: Request, payload: ChatRequest):
         try:
             while True:
                 item = await queue.get()
+                if await request.is_disconnected():
+                    break
                 yield item
                 if item == "data: [DONE]\n\n":
                     break
@@ -154,4 +156,13 @@ async def chat_stream(request: Request, payload: ChatRequest):
             with suppress(asyncio.CancelledError):
                 await producer_task
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=headers,
+    )
