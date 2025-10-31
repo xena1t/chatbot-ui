@@ -1,12 +1,13 @@
+import asyncio
 import json
 import logging
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, status
-import httpx
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -27,6 +28,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list)
     params: Optional[Dict[str, Any]] = None
     video_url: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _resolve_static_path(static_url: str) -> Path:
@@ -92,26 +94,60 @@ async def chat_stream(request: Request, payload: ChatRequest):
         public_frame_urls, model_frame_urls = _prepare_frames(request, payload.video_url)
 
     async def event_generator():
-        if public_frame_urls:
-            yield _format_sse({"event": "frames", "frames": public_frame_urls})
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        first_token = asyncio.Event()
+
+        async def heartbeat() -> None:
+            try:
+                # Send an initial comment immediately to keep the connection open.
+                await queue.put(":\n\n")
+                while not first_token.is_set():
+                    await asyncio.sleep(5)
+                    if first_token.is_set():
+                        break
+                    await queue.put(":\n\n")
+            except asyncio.CancelledError:  # pragma: no cover - cooperative cancellation
+                pass
+
+        async def produce_events() -> None:
+            try:
+                if public_frame_urls:
+                    await queue.put(_format_sse({"event": "frames", "frames": public_frame_urls}))
+
+                async for event in stream_chat_completion(
+                    messages=messages,
+                    params=payload.params,
+                    image_urls=model_frame_urls or None,
+                    model=payload.model,
+                ):
+                    if await request.is_disconnected():
+                        logger.info("Client disconnected from stream")
+                        break
+                    if event.get("event") == "token":
+                        first_token.set()
+                    await queue.put(_format_sse(event))
+            except Exception as exc:  # pragma: no cover - unexpected
+                logger.exception("Unexpected error during streaming")
+                await queue.put(_format_sse({"event": "error", "message": str(exc)}))
+            finally:
+                first_token.set()
+                await queue.put("data: [DONE]\n\n")
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        producer_task = asyncio.create_task(produce_events())
 
         try:
-            async for event in stream_chat_completion(
-                messages=messages,
-                params=payload.params,
-                image_urls=model_frame_urls or None,
-            ):
-                if await request.is_disconnected():
-                    logger.info("Client disconnected from stream")
+            while True:
+                item = await queue.get()
+                yield item
+                if item == "data: [DONE]\n\n":
                     break
-                yield _format_sse(event)
-        except httpx.HTTPError as exc:
-            logger.error("HTTP error while talking to vLLM: %s", exc)
-            yield _format_sse({"event": "error", "message": "Upstream error"})
-        except Exception as exc:  # pragma: no cover - unexpected
-            logger.exception("Unexpected error during streaming")
-            yield _format_sse({"event": "error", "message": str(exc)})
         finally:
-            yield "data: [DONE]\n\n"
+            heartbeat_task.cancel()
+            producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+            with suppress(asyncio.CancelledError):
+                await producer_task
 
     return StreamingResponse(event_generator(), media_type="text/event-stream")

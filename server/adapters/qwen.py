@@ -1,128 +1,255 @@
-import json
+import asyncio
 import logging
+import threading
+from dataclasses import dataclass
 from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 
-import httpx
+import torch
+from transformers import (
+    AutoModelForCausalLM,
+    AutoModelForVision2Seq,
+    AutoProcessor,
+    AutoTokenizer,
+    TextIteratorStreamer,
+)
+from transformers.modeling_utils import PreTrainedModel
 
 from ..utils.env import get_settings
 
 logger = logging.getLogger(__name__)
 
 
-def _ensure_content_is_list(content: Any) -> List[Dict[str, Any]]:
-    if isinstance(content, list):
+@dataclass
+class _ModelBundle:
+    processor: Any
+    tokenizer: Any
+    model: PreTrainedModel
+    device: Optional[str]
+    uses_vision_language: bool
+
+
+_MODEL_CACHE: Dict[str, _ModelBundle] = {}
+_CACHE_LOCK = asyncio.Lock()
+_MODEL_LOCKS: Dict[str, asyncio.Lock] = {}
+
+
+def _ensure_text(content: Any) -> str:
+    if isinstance(content, str):
         return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and item.get("text"):
+                    parts.append(str(item["text"]))
+                elif item.get("type") == "image_url" and item.get("image_url"):
+                    url = item["image_url"].get("url")
+                    if url:
+                        parts.append(f"[image: {url}]")
+            elif item:
+                parts.append(str(item))
+        return "\n".join(parts)
     if content is None:
-        return []
-    return [{"type": "text", "text": str(content)}]
+        return ""
+    return str(content)
 
 
-def _merge_images_into_messages(
-    messages: List[Dict[str, Any]],
-    image_urls: Optional[Iterable[str]],
-) -> List[Dict[str, Any]]:
-    prepared = []
-    for item in messages:
-        prepared.append(
-            {
-                "role": item.get("role", "user"),
-                "content": _ensure_content_is_list(item.get("content")),
-            }
-        )
+def _format_prompt(messages: List[Dict[str, Any]], image_urls: Optional[Iterable[str]]) -> str:
+    segments: List[str] = []
+    for message in messages:
+        role = message.get("role", "user")
+        role_label = "User" if role == "user" else "Assistant"
+        text = _ensure_text(message.get("content"))
+        segments.append(f"{role_label}: {text}" if text else f"{role_label}:")
 
-    image_urls = list(image_urls or [])
-    if not image_urls:
-        return prepared
+    urls = list(image_urls or [])
+    if urls:
+        segments.append("User shared the following image frames:")
+        segments.extend(urls)
 
-    for message in reversed(prepared):
-        if message["role"] == "user":
-            content = message.setdefault("content", [])
-            if not isinstance(content, list):
-                content = _ensure_content_is_list(content)
-                message["content"] = content
-            content.extend(
-                {
-                    "type": "image_url",
-                    "image_url": {"url": url},
-                }
-                for url in image_urls
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
+
+
+async def _load_model(model_name: str) -> _ModelBundle:
+    async with _CACHE_LOCK:
+        bundle = _MODEL_CACHE.get(model_name)
+        if bundle:
+            return bundle
+        lock = _MODEL_LOCKS.setdefault(model_name, asyncio.Lock())
+
+    async with lock:
+        async with _CACHE_LOCK:
+            bundle = _MODEL_CACHE.get(model_name)
+            if bundle:
+                return bundle
+
+        settings = get_settings()
+
+        def _load() -> _ModelBundle:
+            load_kwargs: Dict[str, Any] = {"trust_remote_code": True}
+            target_device = settings.transformers_device
+            if target_device == "auto":
+                load_kwargs["device_map"] = "auto"
+                load_kwargs["torch_dtype"] = torch.float16
+            else:
+                if target_device.startswith("cuda"):
+                    load_kwargs["torch_dtype"] = torch.float16
+                else:
+                    load_kwargs["torch_dtype"] = torch.float32
+            lower_name = model_name.lower()
+            uses_vision_language = "vl" in lower_name or "vision" in lower_name
+
+            if uses_vision_language:
+                processor = AutoProcessor.from_pretrained(
+                    model_name, trust_remote_code=True
+                )
+                model = AutoModelForVision2Seq.from_pretrained(model_name, **load_kwargs)
+                tokenizer = getattr(processor, "tokenizer", processor)
+            else:
+                processor = AutoTokenizer.from_pretrained(
+                    model_name, trust_remote_code=True
+                )
+                model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+                tokenizer = processor
+            bundle_device: Optional[str]
+            if target_device != "auto":
+                model.to(target_device)
+                bundle_device = target_device
+            else:
+                bundle_device = "cuda" if torch.cuda.is_available() else "cpu"
+            model.eval()
+            return _ModelBundle(
+                processor=processor,
+                tokenizer=tokenizer,
+                model=model,
+                device=bundle_device,
+                uses_vision_language=uses_vision_language,
             )
-            break
-    else:
-        prepared.append(
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": ""},
-                    *(
-                        {
-                            "type": "image_url",
-                            "image_url": {"url": url},
-                        }
-                        for url in image_urls
-                    ),
-                ],
-            }
-        )
 
-    return prepared
+        bundle = await asyncio.to_thread(_load)
+        async with _CACHE_LOCK:
+            _MODEL_CACHE[model_name] = bundle
+        return bundle
+
+
+def _build_generate_kwargs(params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    kwargs: Dict[str, Any] = {}
+    max_new_tokens = 512
+    temperature = 0.7
+    top_p = None
+    top_k = None
+    repetition_penalty = None
+
+    if params:
+        if "max_new_tokens" in params:
+            try:
+                max_new_tokens = int(params["max_new_tokens"])
+            except (TypeError, ValueError):
+                logger.warning("Invalid max_new_tokens value: %s", params["max_new_tokens"])
+        if "temperature" in params:
+            try:
+                temperature = float(params["temperature"])
+            except (TypeError, ValueError):
+                logger.warning("Invalid temperature value: %s", params["temperature"])
+        if "top_p" in params:
+            try:
+                top_p = float(params["top_p"])
+            except (TypeError, ValueError):
+                logger.warning("Invalid top_p value: %s", params["top_p"])
+        if "top_k" in params:
+            try:
+                top_k = int(params["top_k"])
+            except (TypeError, ValueError):
+                logger.warning("Invalid top_k value: %s", params["top_k"])
+        if "repetition_penalty" in params:
+            try:
+                repetition_penalty = float(params["repetition_penalty"])
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid repetition_penalty value: %s", params["repetition_penalty"]
+                )
+
+    max_new_tokens = max(1, min(max_new_tokens, 2048))
+    kwargs["max_new_tokens"] = max_new_tokens
+
+    do_sample = temperature is not None and temperature > 0
+    kwargs["do_sample"] = do_sample
+    if do_sample:
+        kwargs["temperature"] = max(0.01, temperature)
+        if top_p is not None and 0 < top_p <= 1:
+            kwargs["top_p"] = top_p
+        if top_k is not None and top_k > 0:
+            kwargs["top_k"] = top_k
+    if repetition_penalty is not None and repetition_penalty > 0:
+        kwargs["repetition_penalty"] = repetition_penalty
+
+    return kwargs
 
 
 async def stream_chat_completion(
     messages: List[Dict[str, Any]],
     params: Optional[Dict[str, Any]] = None,
     image_urls: Optional[Iterable[str]] = None,
+    model: Optional[str] = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     settings = get_settings()
-    request_payload: Dict[str, Any] = {
-        "model": settings.model_name,
-        "stream": True,
-        "messages": _merge_images_into_messages(messages, image_urls),
-    }
-    if params:
-        request_payload.update(params)
+    model_name = model or settings.model_name
 
-    url = f"http://{settings.vllm_host}:{settings.vllm_port}/v1/chat/completions"
-    timeout = httpx.Timeout(300.0, connect=30.0)
+    bundle = await _load_model(model_name)
 
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        async with client.stream("POST", url, json=request_payload) as response:
-            response.raise_for_status()
-            async for line in response.aiter_lines():
-                if not line:
-                    continue
-                if line.startswith("data: "):
-                    data = line[6:].strip()
-                elif line.startswith("data:"):
-                    data = line[5:].strip()
-                else:
-                    continue
+    prompt = _format_prompt(messages, image_urls)
 
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    yield {"event": "done"}
-                    break
+    processor = bundle.processor
 
-                try:
-                    payload = json.loads(data)
-                except json.JSONDecodeError:
-                    logger.warning("Unable to decode payload from vLLM: %s", data)
-                    continue
+    def _encode() -> Dict[str, Any]:
+        if bundle.uses_vision_language:
+            return processor(text=prompt, return_tensors="pt")
+        return processor(prompt, return_tensors="pt", add_special_tokens=True)
 
-                choices = payload.get("choices", [])
-                for choice in choices:
-                    delta = choice.get("delta", {})
-                    if "content" in delta:
-                        yield {
-                            "event": "token",
-                            "text": delta["content"],
-                        }
-                finish_reason = None
-                if choices:
-                    finish_reason = choices[0].get("finish_reason")
-                if finish_reason:
-                    yield {"event": "finish", "reason": finish_reason}
+    encoded = await asyncio.to_thread(_encode)
+
+    tokenizer = bundle.tokenizer
+
+    if bundle.device:
+        encoded = {key: value.to(bundle.device) for key, value in encoded.items()}
+
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+    generate_kwargs = _build_generate_kwargs(params)
+    generate_kwargs["streamer"] = streamer
+
+    for key, value in encoded.items():
+        generate_kwargs[key] = value
+
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
+
+    def _forward_stream() -> None:
+        for text in streamer:
+            loop.call_soon_threadsafe(queue.put_nowait, text)
+        loop.call_soon_threadsafe(queue.put_nowait, None)
+
+    def _generate() -> None:
+        with torch.inference_mode():
+            bundle.model.generate(**generate_kwargs)
+
+    forward_thread = threading.Thread(target=_forward_stream, daemon=True)
+    forward_thread.start()
+
+    generation_future = loop.run_in_executor(None, _generate)
+
+    try:
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            if chunk:
+                yield {"event": "token", "text": chunk}
+        await generation_future
+        yield {"event": "finish", "reason": "stop"}
+    finally:
+        if forward_thread.is_alive():
+            forward_thread.join(timeout=0.1)
 
 
 __all__ = ["stream_chat_completion"]

@@ -1,9 +1,9 @@
 # RunPod Qwen3-VL Chat UI
 
-An end-to-end demo for chatting with **Qwen3-VL-32B-Instruct** on RunPod. The system
-runs both the vLLM OpenAI-compatible server and a FastAPI backend inside a single
-container, streams responses to the browser via Server-Sent Events, and supports
-uploading a short video whose frames are extracted and sent to the model.
+An end-to-end demo for chatting with **Qwen3-VL-32B-Instruct** on RunPod. The
+system loads Hugging Face models with 🤗 Transformers inside the FastAPI backend,
+streams responses to the browser via Server-Sent Events, and supports uploading a
+short video whose frames are extracted and sent to the model.
 
 ## Features
 
@@ -35,8 +35,6 @@ uploading a short video whose frames are extracted and sent to the model.
 │   │   └── frames.py
 │   ├── static/              # mount point for uploads & extracted frames
 │   └── web/                 # compiled frontend assets served by FastAPI
-├── scripts/
-│   └── run_vllm.sh
 └── webapp/                  # React + Vite source
     ├── index.html
     ├── package.json
@@ -56,8 +54,8 @@ Copy `.env.example` into `.env` (or configure via RunPod UI). Important variable
 |----------|-------------|---------|
 | `HOST` | FastAPI bind host | `0.0.0.0` |
 | `PORT` | FastAPI bind port | `8000` |
-| `VLLM_HOST` / `VLLM_PORT` | Internal vLLM endpoint | `127.0.0.1:8001` |
 | `MODEL_NAME` | Hugging Face identifier for Qwen | `Qwen/Qwen3-VL-32B-Instruct` |
+| `TRANSFORMERS_DEVICE` | Target device (`auto`, `cuda`, or `cpu`) | `auto` |
 | `CORS_ORIGIN` | Comma-separated list of allowed origins (`*` for dev) | `*` |
 | `MAX_VIDEO_SECONDS` | Maximum upload duration | `30` |
 | `MAX_VIDEO_MB` | Maximum upload size | `50` |
@@ -70,16 +68,16 @@ Copy `.env.example` into `.env` (or configure via RunPod UI). Important variable
 
 ## Building the container image
 
-The provided Dockerfile creates a single RunPod-ready image with both vLLM and the
-FastAPI app. Build it from the repository root:
+The provided Dockerfile creates a single RunPod-ready image with the FastAPI app
+and bundled Transformers backend. Build it from the repository root:
 
 ```bash
 docker build -t runpod-qwen3vl -f server/Dockerfile .
 ```
 
 This multi-stage build installs the frontend dependencies, compiles the Vite app
-into `server/web/`, installs Python requirements (including `vllm`), and sets the
-entrypoint to `run_all.sh`.
+into `server/web/`, installs the Python requirements (including `transformers`
+and `torch`), and sets the entrypoint to `run_all.sh`.
 
 ## Running locally (GPU required)
 
@@ -100,13 +98,9 @@ entrypoint to `run_all.sh`.
    HOST=0.0.0.0 PORT=8000 bash server/run_all.sh
    ```
 
-The script first starts vLLM on `127.0.0.1:8001` and then runs Uvicorn on
-`0.0.0.0:8000`. The public API serves the React application and exposes
-`/api/upload`, `/api/chat/stream`, `/healthz`, and `/static/*`.
-
-> **Note:** For GPU-less development, you can comment out the `vllm` installation
-> in `server/requirements.txt` and mock the adapter. The production RunPod pod
-> should keep the defaults to download and serve the real model.
+The script boots Uvicorn on `0.0.0.0:8000`, loads the configured Transformers
+model, and serves the React application alongside `/api/upload`,
+`/api/chat/stream`, `/healthz`, and `/static/*`.
 
 ## API overview
 
