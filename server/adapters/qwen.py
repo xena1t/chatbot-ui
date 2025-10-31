@@ -6,6 +6,12 @@ from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional
 
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
+from transformers.modeling_utils import PreTrainedModel
+
+try:
+    from transformers import Qwen2VLForConditionalGeneration
+except ImportError:  # pragma: no cover - optional vision dependency
+    Qwen2VLForConditionalGeneration = None  # type: ignore[assignment]
 
 from ..utils.env import get_settings
 
@@ -15,7 +21,7 @@ logger = logging.getLogger(__name__)
 @dataclass
 class _ModelBundle:
     tokenizer: AutoTokenizer
-    model: AutoModelForCausalLM
+    model: PreTrainedModel
     device: Optional[str]
 
 
@@ -91,7 +97,20 @@ async def _load_model(model_name: str) -> _ModelBundle:
                     load_kwargs["torch_dtype"] = torch.float16
                 else:
                     load_kwargs["torch_dtype"] = torch.float32
-            model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
+            lower_name = model_name.lower()
+            uses_vision_language = "vl" in lower_name or "vision" in lower_name
+
+            if uses_vision_language:
+                if Qwen2VLForConditionalGeneration is None:
+                    raise RuntimeError(
+                        "Qwen2VLForConditionalGeneration is not available; ensure your "
+                        "transformers installation supports Qwen3-VL models."
+                    )
+                model = Qwen2VLForConditionalGeneration.from_pretrained(
+                    model_name, **load_kwargs
+                )
+            else:
+                model = AutoModelForCausalLM.from_pretrained(model_name, **load_kwargs)
             bundle_device: Optional[str]
             if target_device != "auto":
                 model.to(target_device)
