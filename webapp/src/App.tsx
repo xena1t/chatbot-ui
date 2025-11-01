@@ -220,7 +220,9 @@ const App: React.FC = () => {
     } catch (err) {
       const ids = pendingIds.current;
       if (ids) {
-        if ((err as Error).name === "AbortError") {
+        const aborted =
+          err instanceof DOMException && err.name === "AbortError" && controller.signal.aborted;
+        if (aborted) {
           setAssistantError(ids.assistantId, "Response cancelled.");
         } else {
           const message = err instanceof Error ? err.message : String(err);
