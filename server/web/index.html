@@ -2,50 +2,13 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>RunPod Qwen3-VL Chat</title>
-    <link rel="stylesheet" href="assets/index.css" />
+    <script type="module" crossorigin src="/assets/index-DeFsYI1G.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CRN6lvV8.css">
   </head>
   <body>
-    <div class="app">
-      <header class="app-header">
-        <h1>RunPod Qwen3-VL Chat</h1>
-        <p>Upload a short video and chat with Qwen3-VL-32B.</p>
-      </header>
-      <main class="layout">
-        <section class="chat-pane" id="chat-pane">
-          <div class="empty">Start by sending a message or video.</div>
-        </section>
-        <section class="composer">
-          <div class="error hidden" id="error-box"></div>
-          <form id="chat-form">
-            <label for="prompt">Message</label>
-            <textarea
-              id="prompt"
-              name="prompt"
-              rows="4"
-              placeholder="Describe what you want the model to do…"
-            ></textarea>
-            <div class="controls">
-              <div class="file-input">
-                <label class="file-label" id="file-label">
-                  <span id="file-label-text">Attach MP4/MOV (≤30s)</span>
-                  <input id="video-input" type="file" accept="video/mp4,video/quicktime" />
-                </label>
-                <div class="preview hidden" id="preview-container">
-                  <video id="video-preview" controls preload="metadata"></video>
-                  <button type="button" id="remove-video">Remove</button>
-                </div>
-              </div>
-              <div class="actions">
-                <button type="button" class="secondary hidden" id="stop-button">Stop</button>
-                <button type="submit" id="send-button" disabled>Send</button>
-              </div>
-            </div>
-          </form>
-        </section>
-      </main>
-    </div>
-    <script type="module" src="assets/index.js"></script>
+    <div id="root"></div>
   </body>
 </html>

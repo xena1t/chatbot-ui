@@ -1,12 +1,13 @@
+import asyncio
 import json
 import logging
 import uuid
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Request, status
-import httpx
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -27,6 +28,7 @@ class ChatRequest(BaseModel):
     messages: List[ChatMessage] = Field(default_factory=list)
     params: Optional[Dict[str, Any]] = None
     video_url: Optional[str] = None
+    model: Optional[str] = None
 
 
 def _resolve_static_path(static_url: str) -> Path:
@@ -50,7 +52,7 @@ def _format_sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _prepare_frames(request: Request, video_url: str) -> Tuple[List[str], List[str]]:
+def _prepare_frames(video_url: str) -> Tuple[List[str], List[Path]]:
     settings = get_settings()
     video_path = _resolve_static_path(video_url)
 
@@ -67,9 +69,7 @@ def _prepare_frames(request: Request, video_url: str) -> Tuple[List[str], List[s
         logger.error("Frame extraction failed: %s", exc)
         raise HTTPException(status_code=500, detail="Unable to process video frames") from exc
 
-    base_url = str(request.base_url).rstrip("/")
     public_urls: List[str] = []
-    model_urls: List[str] = []
     if not frames:
         raise HTTPException(status_code=500, detail="No frames extracted")
 
@@ -77,41 +77,92 @@ def _prepare_frames(request: Request, video_url: str) -> Tuple[List[str], List[s
         relative = frame.relative_to(settings.static_root)
         public_path = f"/static/{relative.as_posix()}"
         public_urls.append(public_path)
-        model_urls.append(f"{base_url}{public_path}")
 
-    return public_urls, model_urls
+    return public_urls, frames
 
 
 @router.post("/chat/stream")
 async def chat_stream(request: Request, payload: ChatRequest):
     messages = [message.dict() for message in payload.messages]
 
-    public_frame_urls: List[str] = []
-    model_frame_urls: List[str] = []
-    if payload.video_url:
-        public_frame_urls, model_frame_urls = _prepare_frames(request, payload.video_url)
-
     async def event_generator():
-        if public_frame_urls:
-            yield _format_sse({"event": "frames", "frames": public_frame_urls})
+        queue: asyncio.Queue[str] = asyncio.Queue()
+        first_token = asyncio.Event()
+
+        async def heartbeat() -> None:
+            try:
+                # Send an initial comment immediately to keep the connection open.
+                await queue.put(":\n\n")
+                while not first_token.is_set():
+                    await asyncio.sleep(5)
+                    if first_token.is_set():
+                        break
+                    await queue.put(":\n\n")
+            except asyncio.CancelledError:  # pragma: no cover - cooperative cancellation
+                pass
+
+        async def produce_events() -> None:
+            try:
+                frame_urls: List[str] = []
+                frame_paths: List[Path] = []
+                if payload.video_url:
+                    frame_urls, frame_paths = await asyncio.to_thread(
+                        _prepare_frames, payload.video_url
+                    )
+
+                if frame_urls:
+                    await queue.put(_format_sse({"event": "frames", "frames": frame_urls}))
+
+                async for event in stream_chat_completion(
+                    messages=messages,
+                    params=payload.params,
+                    image_paths=frame_paths or None,
+                    model=payload.model,
+                ):
+                    if await request.is_disconnected():
+                        logger.info("Client disconnected from stream")
+                        break
+                    if event.get("event") == "token":
+                        first_token.set()
+                    await queue.put(_format_sse(event))
+            except HTTPException as exc:
+                logger.warning("Frame preparation failed: %s", exc.detail)
+                first_token.set()
+                detail = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+                await queue.put(_format_sse({"event": "error", "message": detail}))
+            except Exception as exc:  # pragma: no cover - unexpected
+                logger.exception("Unexpected error during streaming")
+                await queue.put(_format_sse({"event": "error", "message": str(exc)}))
+            finally:
+                first_token.set()
+                await queue.put("data: [DONE]\n\n")
+
+        heartbeat_task = asyncio.create_task(heartbeat())
+        producer_task = asyncio.create_task(produce_events())
 
         try:
-            async for event in stream_chat_completion(
-                messages=messages,
-                params=payload.params,
-                image_urls=model_frame_urls or None,
-            ):
+            while True:
+                item = await queue.get()
                 if await request.is_disconnected():
-                    logger.info("Client disconnected from stream")
                     break
-                yield _format_sse(event)
-        except httpx.HTTPError as exc:
-            logger.error("HTTP error while talking to vLLM: %s", exc)
-            yield _format_sse({"event": "error", "message": "Upstream error"})
-        except Exception as exc:  # pragma: no cover - unexpected
-            logger.exception("Unexpected error during streaming")
-            yield _format_sse({"event": "error", "message": str(exc)})
+                yield item
+                if item == "data: [DONE]\n\n":
+                    break
         finally:
-            yield "data: [DONE]\n\n"
+            heartbeat_task.cancel()
+            producer_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await heartbeat_task
+            with suppress(asyncio.CancelledError):
+                await producer_task
 
-    return StreamingResponse(event_generator(), media_type="text/event-stream")
+    headers = {
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    }
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers=headers,
+    )

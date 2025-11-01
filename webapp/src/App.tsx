@@ -11,6 +11,19 @@ type Message = {
   videoUrl?: string;
 };
 
+type ModelOption = {
+  value: string;
+  label: string;
+};
+
+const MODEL_OPTIONS: ModelOption[] = [
+  { value: "Qwen/Qwen3-VL-2B-Instruct", label: "Qwen3-VL-2B Instruct" },
+  { value: "Qwen/Qwen3-VL-4B-Instruct", label: "Qwen3-VL-4B Instruct" },
+  { value: "Qwen/Qwen3-VL-8B-Instruct", label: "Qwen3-VL-8B Instruct" },
+  { value: "Qwen/Qwen3-VL-30B-A3B-Instruct", label: "Qwen3-VL-30B-A3B Instruct" },
+  { value: "Qwen/Qwen3-VL-32B-Instruct", label: "Qwen3-VL-32B Instruct" },
+];
+
 type UploadResponse = {
   video_url: string;
   duration_s: number;
@@ -60,6 +73,9 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoPreview, setVideoPreview] = useState<string | null>(null);
+  const [model, setModel] = useState<string>(
+    MODEL_OPTIONS[MODEL_OPTIONS.length - 1]?.value || "Qwen/Qwen3-VL-32B-Instruct"
+  );
   const abortRef = useRef<AbortController | null>(null);
   const pendingIds = useRef<{ userId: string; assistantId: string } | null>(null);
 
@@ -182,6 +198,7 @@ const App: React.FC = () => {
         {
           messages: payloadMessages,
           video_url: upload?.video_url,
+          model,
         },
         (event: SSEEvent) => {
           const ids = pendingIds.current;
@@ -203,7 +220,9 @@ const App: React.FC = () => {
     } catch (err) {
       const ids = pendingIds.current;
       if (ids) {
-        if ((err as Error).name === "AbortError") {
+        const aborted =
+          err instanceof DOMException && err.name === "AbortError" && controller.signal.aborted;
+        if (aborted) {
           setAssistantError(ids.assistantId, "Response cancelled.");
         } else {
           const message = err instanceof Error ? err.message : String(err);
@@ -224,7 +243,16 @@ const App: React.FC = () => {
     <div className="app">
       <header className="app-header">
         <h1>RunPod Qwen3-VL Chat</h1>
-        <p>Upload a short video and chat with Qwen3-VL-32B via vLLM.</p>
+        <p>
+          Upload a short video and chat with
+          {" "}
+          {
+            MODEL_OPTIONS.find((option) => option.value === model)?.label ??
+            "a Qwen3-VL model"
+          }
+          {" "}
+          powered by 🤗 Transformers.
+        </p>
       </header>
 
       <main className="layout">
@@ -262,6 +290,21 @@ const App: React.FC = () => {
         <section className="composer">
           {error && <div className="error">{error}</div>}
           <form onSubmit={handleSubmit}>
+            <div className="model-picker">
+              <label htmlFor="model">Model</label>
+              <select
+                id="model"
+                value={model}
+                onChange={(event) => setModel(event.target.value)}
+                disabled={isStreaming}
+              >
+                {MODEL_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </div>
             <label htmlFor="prompt">Message</label>
             <textarea
               id="prompt"
