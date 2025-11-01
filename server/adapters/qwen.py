@@ -191,7 +191,9 @@ async def _load_model(model_name: str) -> _ModelBundle:
             bundle_dtype: Optional[torch.dtype]
             if target_device != "auto":
                 bundle_device = torch.device(target_device)
-                bundle_dtype = reference_parameter.dtype if reference_parameter else None
+                bundle_dtype = (
+                    reference_parameter.dtype if reference_parameter is not None else None
+                )
             else:
                 if reference_parameter is not None:
                     bundle_device = reference_parameter.device
