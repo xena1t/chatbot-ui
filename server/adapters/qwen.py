@@ -285,17 +285,29 @@ async def stream_chat_completion(
     processor = bundle.processor
 
     def _encode() -> Dict[str, Any]:
-        if bundle.uses_vision_language and image_paths:
-            return _prepare_multimodal_inputs(
-                processor,
-                messages,
-                list(image_paths),
-            )
         prompt = _format_prompt(
             messages,
             [path.as_posix() for path in image_paths] if image_paths else None,
         )
-        return processor(prompt, return_tensors="pt", add_special_tokens=True)
+        if bundle.uses_vision_language:
+            if image_paths:
+                return _prepare_multimodal_inputs(
+                    processor,
+                    messages,
+                    list(image_paths),
+                )
+            tokenizer_to_use = getattr(bundle.tokenizer, "__call__", None)
+            if callable(tokenizer_to_use):
+                return bundle.tokenizer(
+                    prompt,
+                    return_tensors="pt",
+                    add_special_tokens=True,
+                )
+        return processor(
+            text=prompt,
+            return_tensors="pt",
+            add_special_tokens=True,
+        )
 
     encoded = await asyncio.to_thread(_encode)
 
