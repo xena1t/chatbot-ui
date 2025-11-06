@@ -14,6 +14,10 @@ from transformers import (
     AutoTokenizer,
     TextIteratorStreamer,
 )
+try:  # transformers exposes BatchEncoding from tokenization utils
+    from transformers.tokenization_utils_base import BatchEncoding
+except ImportError:  # pragma: no cover - version dependent
+    BatchEncoding = None  # type: ignore[assignment]
 
 try:  # transformers<4.46 does not expose this helper
     from transformers import AutoModelForImageTextToText
@@ -97,6 +101,24 @@ def _format_prompt(
     return "\n".join(segments).strip() + "\n"
 
 
+def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
+    if inputs is None:
+        return {}
+    if BatchEncoding is not None and isinstance(inputs, BatchEncoding):
+        inputs = inputs.data
+    if isinstance(inputs, dict):
+        return {key: value for key, value in inputs.items()}
+    if isinstance(inputs, (list, tuple)):
+        if len(inputs) == 1:
+            return _coerce_model_inputs(inputs[0])
+        return {f"input_{index}": value for index, value in enumerate(inputs)}
+    if isinstance(inputs, torch.Tensor):
+        return {"input_ids": inputs}
+    if hasattr(inputs, "to"):
+        return {"input": inputs}
+    return {"input": inputs}
+
+
 def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     conversation: List[Dict[str, Any]] = []
     for message in messages:
@@ -167,7 +189,7 @@ def _prepare_multimodal_inputs(
                     processor_attempt_errors.append(
                         f"{description} image_processor fallback: {exc}"
                     )
-        return outputs
+        return _coerce_model_inputs(outputs)
 
     base_kwargs: Dict[str, Any] = {"return_tensors": "pt"}
     for variant in conversation_variants:
@@ -224,7 +246,7 @@ def _prepare_multimodal_inputs(
                         model_inputs.update(image_inputs)
                     except TypeError:
                         pass
-            return model_inputs
+            return _coerce_model_inputs(model_inputs)
 
         for variant in conversation_variants:
             try:
@@ -509,13 +531,16 @@ async def stream_chat_completion(
             messages,
             [path.as_posix() for path in frames] if frames else None,
         )
-        return processor(
-            prompt,
-            return_tensors="pt",
-            add_special_tokens=True,
+        return _coerce_model_inputs(
+            processor(
+                prompt,
+                return_tensors="pt",
+                add_special_tokens=True,
+            )
         )
 
     encoded = await asyncio.to_thread(_encode)
+    encoded = _coerce_model_inputs(encoded)
 
     tokenizer = bundle.tokenizer
 
