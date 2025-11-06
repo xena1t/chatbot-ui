@@ -112,12 +112,6 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
-def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
-    images: List[Any] = []
-    for frame_path in frame_paths:
-        with Image.open(frame_path) as image:
-            images.append(image.convert("RGB"))
-    return images
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
@@ -143,22 +137,42 @@ def _prepare_multimodal_inputs(
         conversation[-1]["content"] = image_items + existing_content
 
     if hasattr(processor, "apply_chat_template"):
-        prompt = processor.apply_chat_template(
-            conversation,
-            tokenize=False,
-            add_generation_prompt=True,
+        try:
+            model_inputs = processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
+            if images and "pixel_values" not in model_inputs:
+                image_processor = getattr(processor, "image_processor", None)
+                if callable(image_processor):
+                    try:
+                        image_inputs = image_processor(images=images, return_tensors="pt")
+                        model_inputs.update(image_inputs)
+                    except TypeError:
+                        pass
+            return model_inputs
+        except TypeError:
+            prompt = processor.apply_chat_template(
+                conversation,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+    else:
+        prompt = _format_prompt(
+            messages,
+            [path.as_posix() for path in frame_paths],
         )
-        processor_kwargs: Dict[str, Any] = {"text": [prompt], "return_tensors": "pt"}
-        if images:
-            processor_kwargs["images"] = images
-        return processor(**processor_kwargs)
 
-    logger.warning("Processor missing chat template; falling back to text-only encoding")
-    prompt = _format_prompt(
-        messages,
-        [path.as_posix() for path in frame_paths],
-    )
-    return processor(prompt, return_tensors="pt", add_special_tokens=True)
+    processor_kwargs: Dict[str, Any] = {"return_tensors": "pt"}
+    if images:
+        processor_kwargs["images"] = images
+
+    try:
+        return processor(prompt, **processor_kwargs)
+    except TypeError:
+        processor_kwargs["text"] = [prompt]
+        return processor(**processor_kwargs)
 
 
 async def _load_model(model_name: str) -> _ModelBundle:
@@ -340,26 +354,19 @@ async def stream_chat_completion(
     processor = bundle.processor
 
     def _encode() -> Dict[str, Any]:
+        frames: List[Path] = list(image_paths or [])
+        if bundle.uses_vision_language:
+            return _prepare_multimodal_inputs(
+                processor,
+                messages,
+                frames,
+            )
         prompt = _format_prompt(
             messages,
-            [path.as_posix() for path in image_paths] if image_paths else None,
+            [path.as_posix() for path in frames] if frames else None,
         )
-        if bundle.uses_vision_language:
-            if image_paths:
-                return _prepare_multimodal_inputs(
-                    processor,
-                    messages,
-                    list(image_paths),
-                )
-            tokenizer_to_use = getattr(bundle.tokenizer, "__call__", None)
-            if callable(tokenizer_to_use):
-                return bundle.tokenizer(
-                    prompt,
-                    return_tensors="pt",
-                    add_special_tokens=True,
-                )
         return processor(
-            text=prompt,
+            prompt,
             return_tensors="pt",
             add_special_tokens=True,
         )
