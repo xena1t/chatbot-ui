@@ -156,6 +156,8 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
