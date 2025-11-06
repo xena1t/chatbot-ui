@@ -7,18 +7,12 @@ from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Sequence
 
 import torch
 from transformers import (
-    AutoModel,
     AutoModelForCausalLM,
     AutoModelForVision2Seq,
     AutoProcessor,
     AutoTokenizer,
     TextIteratorStreamer,
 )
-
-try:  # transformers<4.46 does not expose this helper
-    from transformers import AutoModelForImageTextToText
-except ImportError:  # pragma: no cover - optional depending on version
-    AutoModelForImageTextToText = None  # type: ignore[assignment]
 from transformers.modeling_utils import PreTrainedModel
 
 from ..utils.env import get_settings
@@ -196,38 +190,8 @@ async def _load_model(model_name: str) -> _ModelBundle:
                 processor = AutoProcessor.from_pretrained(
                     model_name, trust_remote_code=True
                 )
-
-                load_attempts: List[str] = []
-
-                vision_loaders: List[Any] = []
-                if AutoModelForImageTextToText is not None:
-                    vision_loaders.append(AutoModelForImageTextToText)
-                vision_loaders.append(AutoModelForVision2Seq)
-                vision_loaders.append(AutoModelForCausalLM)
-                vision_loaders.append(AutoModel)
-
-                model = None
-                for loader in vision_loaders:
-                    try:
-                        model = loader.from_pretrained(model_name, **load_kwargs)
-                        break
-                    except ValueError as err:
-                        load_attempts.append(f"{loader.__name__}: {err}")
-                    except Exception as err:  # pragma: no cover - defensive
-                        load_attempts.append(f"{loader.__name__}: {err}")
-
-                if model is None:
-                    error_details = " | ".join(load_attempts)
-                    raise RuntimeError(
-                        "Unable to load vision-language model '%s': %s"
-                        % (model_name, error_details or "no loaders succeeded")
-                    )
-
-                tokenizer = getattr(processor, "tokenizer", None)
-                if tokenizer is None:
-                    tokenizer = AutoTokenizer.from_pretrained(
-                        model_name, trust_remote_code=True
-                    )
+                model = AutoModelForVision2Seq.from_pretrained(model_name, **load_kwargs)
+                tokenizer = getattr(processor, "tokenizer", processor)
             else:
                 processor = AutoTokenizer.from_pretrained(
                     model_name, trust_remote_code=True
