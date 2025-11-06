@@ -100,6 +100,8 @@ def _format_prompt(
     segments.append("Assistant:")
     return "\n".join(segments).strip() + "\n"
 
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
 
 def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
     if inputs is None:
