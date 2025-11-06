@@ -25,6 +25,17 @@ except ImportError as exc:  # pragma: no cover - pillow should be installed
 logger = logging.getLogger(__name__)
 
 
+_VISION_LANGUAGE_KEYWORDS: Sequence[str] = (
+    "vl",
+    "vision",
+    "video",
+    "vila",
+    "onevision",
+    "internvl",
+    "llava",
+)
+
+
 @dataclass
 class _ModelBundle:
     processor: Any
@@ -95,6 +106,12 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
+def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
+    images: List[Any] = []
+    for frame_path in frame_paths:
+        with Image.open(frame_path) as image:
+            images.append(image.convert("RGB"))
+    return images
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
@@ -165,7 +182,9 @@ async def _load_model(model_name: str) -> _ModelBundle:
                 else:
                     load_kwargs["torch_dtype"] = torch.float32
             lower_name = model_name.lower()
-            uses_vision_language = "vl" in lower_name or "vision" in lower_name
+            uses_vision_language = any(
+                keyword in lower_name for keyword in _VISION_LANGUAGE_KEYWORDS
+            )
 
             if uses_vision_language:
                 processor = AutoProcessor.from_pretrained(

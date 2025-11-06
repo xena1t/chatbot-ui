@@ -22,6 +22,21 @@ const MODEL_OPTIONS: ModelOption[] = [
   { value: "Qwen/Qwen3-VL-8B-Instruct", label: "Qwen3-VL-8B Instruct" },
   { value: "Qwen/Qwen3-VL-30B-A3B-Instruct", label: "Qwen3-VL-30B-A3B Instruct" },
   { value: "Qwen/Qwen3-VL-32B-Instruct", label: "Qwen3-VL-32B Instruct" },
+  { value: "lmms-lab/LLaVA-Video-7B-Qwen2", label: "LLaVA-Video 7B Qwen2" },
+  { value: "OpenGVLab/InternVL2-8B", label: "InternVL2 8B" },
+  {
+    value: "lmms-lab/llava-onevision-qwen2-7b-ov",
+    label: "LLaVA OneVision Qwen2 7B",
+  },
+  {
+    value: "Efficient-Large-Model/Llama-3-VILA1.5-8B",
+    label: "Llama-3 VILA1.5 8B",
+  },
+  {
+    value: "lmms-lab/llava-onevision-qwen2-0.5b-ov",
+    label: "LLaVA OneVision Qwen2 0.5B",
+  },
+  { value: "OpenGVLab/InternVL2-2B", label: "InternVL2 2B" },
 ];
 
 type UploadResponse = {
