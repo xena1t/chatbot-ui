@@ -18,19 +18,17 @@ RUN apt-get update \
     && ln -s /usr/bin/python3 /usr/bin/python
 
 COPY server /app/server
-COPY scripts /app/scripts
 COPY --from=web-builder /app/server/web /app/server/web
 
-RUN chmod +x /app/server/run_all.sh /app/scripts/run_vllm.sh
+RUN chmod +x /app/server/run_all.sh
 
 RUN python3 -m pip install --upgrade pip \
     && python3 -m pip install --no-cache-dir -r /app/server/requirements.txt
 
 ENV HOST=0.0.0.0 \
     PORT=8000 \
-    VLLM_HOST=127.0.0.1 \
-    VLLM_PORT=8001 \
-    MODEL_NAME=Qwen/Qwen3-VL-32B-Instruct
+    MODEL_NAME=Qwen/Qwen3-VL-32B-Instruct \
+    TRANSFORMERS_DEVICE=auto
 
 EXPOSE 8000
 
