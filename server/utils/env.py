@@ -8,9 +8,8 @@ from pathlib import Path
 class Settings:
     host: str
     port: int
-    vllm_host: str
-    vllm_port: int
     model_name: str
+    transformers_device: str
     data_root: Path
     static_root: Path
     upload_dir: Path
@@ -56,9 +55,8 @@ def _resolve_data_root() -> Path:
 def get_settings() -> Settings:
     host = os.getenv("HOST", "0.0.0.0")
     port = int(os.getenv("PORT", "8000"))
-    vllm_host = os.getenv("VLLM_HOST", "127.0.0.1")
-    vllm_port = int(os.getenv("VLLM_PORT", "8001"))
     model_name = os.getenv("MODEL_NAME", DEFAULT_MODEL)
+    transformers_device = os.getenv("TRANSFORMERS_DEVICE", "auto")
 
     data_root = _resolve_data_root()
     static_root = data_root / "static"
@@ -78,9 +76,8 @@ def get_settings() -> Settings:
     return Settings(
         host=host,
         port=port,
-        vllm_host=vllm_host,
-        vllm_port=vllm_port,
         model_name=model_name,
+        transformers_device=transformers_device,
         data_root=data_root,
         static_root=static_root,
         upload_dir=upload_dir,

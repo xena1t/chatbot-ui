@@ -35,27 +35,23 @@ export async function streamSSE(
   onEvent: (event: SSEEvent) => void,
   options?: { signal?: AbortSignal }
 ): Promise<void> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 900000); // 15 minutes
-
-  if (options?.signal) {
-    const abortSignal = options.signal;
-    if (abortSignal.aborted) {
-      controller.abort();
-    } else {
-      abortSignal.addEventListener("abort", () => controller.abort(), { once: true });
-    }
-  }
+  const localController = options?.signal ? null : new AbortController();
+  const signal = options?.signal ?? localController?.signal;
+  const timeoutId = localController
+    ? setTimeout(() => localController.abort(), 900000)
+    : undefined;
 
   const response = await fetch(url, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
-    signal: controller.signal,
+    signal,
   });
 
   if (!response.ok || !response.body) {
-    controller.abort();
+    if (localController) {
+      localController.abort();
+    }
     throw new Error(`Request failed with status ${response.status}`);
   }
 
@@ -63,7 +59,19 @@ export async function streamSSE(
   const decoder = new TextDecoder("utf-8");
   let buffer = "";
 
-  // Heartbeat to keep the connection open
+  const flushBuffer = () => {
+    let boundary = buffer.indexOf("\n\n");
+    while (boundary !== -1) {
+      const block = buffer.slice(0, boundary);
+      buffer = buffer.slice(boundary + 2);
+      const event = parseEventBlock(block.trim());
+      if (event) {
+        onEvent(event);
+      }
+      boundary = buffer.indexOf("\n\n");
+    }
+  };
+
   const heartbeat = setInterval(() => {
     console.debug("🔄 SSE connection alive");
   }, 30000);
@@ -71,22 +79,21 @@ export async function streamSSE(
   try {
     while (true) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        break;
+      }
 
       buffer += decoder.decode(value, { stream: true });
-      let boundary = buffer.indexOf("\n\n");
-      while (boundary !== -1) {
-        const block = buffer.slice(0, boundary);
-        buffer = buffer.slice(boundary + 2);
-        const event = parseEventBlock(block.trim());
-        if (event) onEvent(event);
-        boundary = buffer.indexOf("\n\n");
-      }
+      flushBuffer();
     }
+
+    buffer += decoder.decode();
+    flushBuffer();
   } finally {
-    clearTimeout(timeout);
     clearInterval(heartbeat);
-    controller.abort();
+    if (typeof timeoutId !== "undefined") {
+      clearTimeout(timeoutId);
+    }
   }
 }
 
