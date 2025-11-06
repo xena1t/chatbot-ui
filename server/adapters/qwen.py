@@ -100,8 +100,6 @@ def _format_prompt(
     segments.append("Assistant:")
     return "\n".join(segments).strip() + "\n"
 
-    segments.append("Assistant:")
-    return "\n".join(segments).strip() + "\n"
 
 def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
     if inputs is None:
@@ -579,7 +577,7 @@ async def stream_chat_completion(
         generate_kwargs[key] = value
 
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[Any] = asyncio.Queue()
+    queue: asyncio.Queue[Optional[str]] = asyncio.Queue()
 
     def _forward_stream() -> None:
         for text in streamer:
@@ -597,26 +595,12 @@ async def stream_chat_completion(
 
     try:
         while True:
-            if generation_future.done() and queue.empty():
-                break
-
-            try:
-                chunk = await asyncio.wait_for(queue.get(), timeout=0.1)
-            except asyncio.TimeoutError:
-                continue
-
+            chunk = await queue.get()
             if chunk is None:
                 break
-
             if chunk:
                 yield {"event": "token", "text": chunk}
-
         await generation_future
-
-        generation_exception = generation_future.exception()
-        if generation_exception is not None:
-            raise generation_exception
-
         yield {"event": "finish", "reason": "stop"}
     finally:
         if forward_thread.is_alive():
