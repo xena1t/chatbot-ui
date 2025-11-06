@@ -120,6 +120,12 @@ def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
             images.append(image.convert("RGB"))
     return images
 
+def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
+    images: List[Any] = []
+    for frame_path in frame_paths:
+        with Image.open(frame_path) as image:
+            images.append(image.convert("RGB"))
+    return images
 
 def _prepare_multimodal_inputs(
     processor: Any,
@@ -138,84 +144,13 @@ def _prepare_multimodal_inputs(
 
     fallback_prompt: Optional[str] = None
 
-    conversation_variants: List[List[Dict[str, Any]]] = [conversation]
-    flattened_variant: List[Dict[str, Any]] = [
-        {
-            "role": message.get("role", "user"),
-            "content": _ensure_text(message.get("content")),
-        }
-        for message in conversation
-    ]
-    conversation_variants.append(flattened_variant)
-
-    processor_attempt_errors: List[str] = []
-
-    def _attempt(description: str, *args: Any, **kwargs: Any) -> Optional[Dict[str, Any]]:
-        try:
-            outputs = processor(*args, **kwargs)
-        except Exception as exc:  # pragma: no cover - processors vary widely
-            processor_attempt_errors.append(f"{description}: {exc}")
-            return None
-
-        if images and isinstance(outputs, dict) and "pixel_values" not in outputs:
-            image_processor = getattr(processor, "image_processor", None)
-            if callable(image_processor):
-                try:
-                    image_inputs = image_processor(images=images, return_tensors="pt")
-                    outputs.update(image_inputs)
-                except Exception as exc:  # pragma: no cover - defensive
-                    processor_attempt_errors.append(
-                        f"{description} image_processor fallback: {exc}"
-                    )
-        return outputs
-
-    base_kwargs: Dict[str, Any] = {"return_tensors": "pt"}
-    for variant in conversation_variants:
-        if not variant:
-            continue
-
-        conv_kwargs = dict(base_kwargs)
-        conv_kwargs["messages"] = variant
-
-        if images:
-            conv_kwargs_with_images = dict(conv_kwargs)
-            conv_kwargs_with_images["images"] = images
-            direct = _attempt(
-                "processor(messages=..., images=...)",
-                **conv_kwargs_with_images,
-            )
-            if direct is not None:
-                return direct
-
-            video_payload = [images]
-            video_kwargs = dict(base_kwargs)
-            video_kwargs["messages"] = variant
-            video_kwargs["videos"] = video_payload
-            direct = _attempt(
-                "processor(messages=..., videos=...)",
-                **video_kwargs,
-            )
-            if direct is not None:
-                return direct
-
-        direct = _attempt("processor(messages=...)", **conv_kwargs)
-        if direct is not None:
-            return direct
-
-    chat_template_errors: List[str] = []
-
     if hasattr(processor, "apply_chat_template"):
-        for variant in conversation_variants:
-            try:
-                model_inputs = processor.apply_chat_template(
-                    variant,
-                    add_generation_prompt=True,
-                    return_tensors="pt",
-                )
-            except Exception as exc:  # pragma: no cover - processors vary widely
-                chat_template_errors.append(str(exc))
-                continue
-
+        try:
+            model_inputs = processor.apply_chat_template(
+                conversation,
+                add_generation_prompt=True,
+                return_tensors="pt",
+            )
             if images and "pixel_values" not in model_inputs:
                 image_processor = getattr(processor, "image_processor", None)
                 if callable(image_processor):
@@ -225,32 +160,21 @@ def _prepare_multimodal_inputs(
                     except TypeError:
                         pass
             return model_inputs
-
-        for variant in conversation_variants:
+        except Exception:  # pragma: no cover - processors vary widely
             try:
-                candidate_prompt = processor.apply_chat_template(
-                    variant,
+                fallback_prompt = processor.apply_chat_template(
+                    [
+                        {
+                            "role": message.get("role", "user"),
+                            "content": _ensure_text(message.get("content")),
+                        }
+                        for message in conversation
+                    ],
                     tokenize=False,
                     add_generation_prompt=True,
                 )
-            except Exception as exc:  # pragma: no cover - processors vary widely
-                chat_template_errors.append(str(exc))
-                continue
-
-            if isinstance(candidate_prompt, (list, tuple)):
-                candidate_prompt = "\n".join(_ensure_text(item) for item in candidate_prompt)
-
-            if not isinstance(candidate_prompt, str):
-                candidate_prompt = _ensure_text(candidate_prompt)
-
-            fallback_prompt = candidate_prompt
-            break
-
-    if fallback_prompt is None and chat_template_errors:
-        logger.debug(
-            "Falling back to manual prompt construction after chat template errors: %s",
-            " | ".join(chat_template_errors),
-        )
+            except Exception:
+                fallback_prompt = None
 
     if fallback_prompt is None:
         fallback_prompt = _format_prompt(
@@ -258,65 +182,15 @@ def _prepare_multimodal_inputs(
             [path.as_posix() for path in frame_paths],
         )
 
-    prompt_variants: List[str] = [fallback_prompt]
+    processor_kwargs: Dict[str, Any] = {"return_tensors": "pt"}
+    if images:
+        processor_kwargs["images"] = images
 
-    for prompt in prompt_variants:
-        prompt_text = _ensure_text(prompt)
-
-        if images:
-            prompt_kwargs = dict(base_kwargs)
-            prompt_kwargs["text"] = prompt_text
-            prompt_kwargs["images"] = images
-            direct = _attempt("processor(text=..., images=...)", **prompt_kwargs)
-            if direct is not None:
-                return direct
-
-            prompt_kwargs = dict(base_kwargs)
-            prompt_kwargs["images"] = images
-            direct = _attempt("processor(prompt, images)", prompt_text, **prompt_kwargs)
-            if direct is not None:
-                return direct
-
-            prompt_kwargs = dict(base_kwargs)
-            prompt_kwargs["text"] = [prompt_text]
-            prompt_kwargs["images"] = images
-            direct = _attempt("processor(text=[...], images=...)", **prompt_kwargs)
-            if direct is not None:
-                return direct
-
-            video_payload = [images]
-            prompt_kwargs = dict(base_kwargs)
-            prompt_kwargs["text"] = prompt_text
-            prompt_kwargs["videos"] = video_payload
-            direct = _attempt("processor(text=..., videos=...)", **prompt_kwargs)
-            if direct is not None:
-                return direct
-
-        prompt_kwargs = dict(base_kwargs)
-        prompt_kwargs["text"] = prompt_text
-        direct = _attempt("processor(text=...)", **prompt_kwargs)
-        if direct is not None:
-            return direct
-
-        prompt_kwargs = dict(base_kwargs)
-        direct = _attempt("processor(prompt)", prompt_text, **prompt_kwargs)
-        if direct is not None:
-            return direct
-
-        prompt_kwargs = dict(base_kwargs)
-        prompt_kwargs["text"] = [prompt_text]
-        direct = _attempt("processor(text=[...])", **prompt_kwargs)
-        if direct is not None:
-            return direct
-
-    if processor_attempt_errors or chat_template_errors:
-        logger.debug(
-            "Processor attempts failed; errors: %s | chat template errors: %s",
-            " | ".join(processor_attempt_errors) or "none",
-            " | ".join(chat_template_errors) or "none",
-        )
-
-    raise RuntimeError("Unable to prepare inputs for multimodal request")
+    try:
+        return processor(fallback_prompt, **processor_kwargs)
+    except TypeError:
+        processor_kwargs["text"] = [fallback_prompt]
+        return processor(**processor_kwargs)
 
 
 async def _load_model(model_name: str) -> _ModelBundle:
