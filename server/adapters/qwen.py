@@ -3,7 +3,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Sequence, Set
+from typing import Any, AsyncGenerator, Dict, Iterable, List, Optional, Sequence
 
 import torch
 from transformers import (
@@ -100,6 +100,8 @@ def _format_prompt(
     segments.append("Assistant:")
     return "\n".join(segments).strip() + "\n"
 
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
 
 def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
     if inputs is None:
@@ -118,8 +120,6 @@ def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
         return {"input": inputs}
     return {"input": inputs}
 
-    segments.append("Assistant:")
-    return "\n".join(segments).strip() + "\n"
 
 def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     conversation: List[Dict[str, Any]] = []
@@ -343,142 +343,6 @@ def _prepare_multimodal_inputs(
     raise RuntimeError("Unable to prepare inputs for multimodal request")
 
 
-def _maybe_initialize_vision_model(model: PreTrainedModel, processor: Any, tokenizer: Any) -> None:
-    initializer_candidates = (
-        "initialize_vision_tokenizer",
-        "initialize_vision_modules",
-        "initialize_vision_tower",
-    )
-
-    for attr in initializer_candidates:
-        initializer = getattr(model, attr, None)
-        if not callable(initializer):
-            continue
-
-        try:
-            initializer(tokenizer=tokenizer, processor=processor)
-        except TypeError:
-            try:
-                initializer(tokenizer=tokenizer)
-            except TypeError:
-                try:
-                    initializer(tokenizer, processor)
-                except TypeError:
-                    try:
-                        initializer(tokenizer)
-                    except Exception:  # pragma: no cover - defensive
-                        logger.debug("%s initialization failed", attr, exc_info=True)
-                except Exception:  # pragma: no cover - defensive
-                    logger.debug("%s initialization failed", attr, exc_info=True)
-            except Exception:  # pragma: no cover - defensive
-                logger.debug("%s initialization failed", attr, exc_info=True)
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("%s initialization failed", attr, exc_info=True)
-
-    if not hasattr(model, "tokenizer") or getattr(model, "tokenizer", None) is None:
-        try:
-            setattr(model, "tokenizer", tokenizer)
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("Unable to attach tokenizer to model", exc_info=True)
-
-    if not hasattr(model, "img_context_token_id"):
-        return
-
-    current_id = getattr(model, "img_context_token_id", None)
-    if current_id is not None:
-        return
-
-    candidate_tokens: List[str] = []
-    candidate_ids: List[int] = []
-
-    config = getattr(model, "config", None)
-    if config is not None:
-        for attr in (
-            "img_context_token",
-            "img_token",
-            "image_token",
-            "image_context_token",
-            "img_start_token",
-            "image_start_token",
-        ):
-            token = getattr(config, attr, None)
-            if isinstance(token, str):
-                candidate_tokens.append(token)
-            elif isinstance(token, (list, tuple)):
-                candidate_tokens.extend(str(item) for item in token if isinstance(item, str))
-
-    for attr in (
-        "img_context_token",
-        "image_token",
-        "image_context_token",
-        "vision_token",
-    ):
-        token = getattr(processor, attr, None)
-        if isinstance(token, str):
-            candidate_tokens.append(token)
-
-    special_map = getattr(tokenizer, "special_tokens_map", {}) or {}
-    for key in ("additional_special_tokens", "additional_special_tokens_ids"):
-        values = special_map.get(key)
-        if isinstance(values, (list, tuple)):
-            for item in values:
-                if isinstance(item, str):
-                    candidate_tokens.append(item)
-                elif isinstance(item, int):
-                    candidate_ids.append(item)
-
-    additional = getattr(tokenizer, "additional_special_tokens", None)
-    if isinstance(additional, (list, tuple)):
-        candidate_tokens.extend(str(token) for token in additional)
-
-    candidate_tokens.extend(
-        [
-            "<img_context>",
-            "<IMG_CONTEXT>",
-            "<image>",
-            "<Image>",
-            "<ImageHere>",
-        ]
-    )
-
-    seen_ids: Set[int] = set()
-    for token_id in candidate_ids:
-        if token_id in seen_ids:
-            continue
-        seen_ids.add(token_id)
-        try:
-            setattr(model, "img_context_token_id", token_id)
-            if config is not None and hasattr(config, "img_context_token_id"):
-                setattr(config, "img_context_token_id", token_id)
-            return
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("Failed to set img_context_token_id to %s", token_id, exc_info=True)
-
-    seen: Set[str] = set()
-    for token in candidate_tokens:
-        if not token:
-            continue
-        if token in seen:
-            continue
-        seen.add(token)
-        try:
-            token_id = tokenizer.convert_tokens_to_ids(token)
-        except Exception:  # pragma: no cover - defensive
-            continue
-        if token_id is None:
-            continue
-        unk_id = getattr(tokenizer, "unk_token_id", None)
-        if unk_id is not None and token_id == unk_id:
-            continue
-        try:
-            setattr(model, "img_context_token_id", token_id)
-            if config is not None and hasattr(config, "img_context_token_id"):
-                setattr(config, "img_context_token_id", token_id)
-            break
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("Failed to set img_context_token_id for token %s", token, exc_info=True)
-
-
 async def _load_model(model_name: str) -> _ModelBundle:
     async with _CACHE_LOCK:
         bundle = _MODEL_CACHE.get(model_name)
@@ -546,7 +410,6 @@ async def _load_model(model_name: str) -> _ModelBundle:
                     tokenizer = AutoTokenizer.from_pretrained(
                         model_name, trust_remote_code=True
                     )
-                _maybe_initialize_vision_model(model, processor, tokenizer)
             else:
                 processor = AutoTokenizer.from_pretrained(
                     model_name, trust_remote_code=True
