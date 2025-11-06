@@ -118,6 +118,8 @@ def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
         return {"input": inputs}
     return {"input": inputs}
 
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
 
 def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     conversation: List[Dict[str, Any]] = []
