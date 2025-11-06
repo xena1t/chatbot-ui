@@ -186,6 +186,58 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
+def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
+    if inputs is None:
+        return {}
+    if BatchEncoding is not None and isinstance(inputs, BatchEncoding):
+        inputs = inputs.data
+    if BatchFeature is not None and isinstance(inputs, BatchFeature):
+        return {key: value for key, value in inputs.items()}
+    if isinstance(inputs, dict):
+        return {key: value for key, value in inputs.items()}
+    if hasattr(inputs, "items"):
+        try:
+            return {key: value for key, value in inputs.items()}
+        except Exception:  # pragma: no cover - defensive
+            pass
+    if isinstance(inputs, (list, tuple)):
+        if len(inputs) == 1:
+            return _coerce_model_inputs(inputs[0])
+        return {f"input_{index}": value for index, value in enumerate(inputs)}
+    if isinstance(inputs, torch.Tensor):
+        return {"input_ids": inputs}
+    for attr in ("to", "__iter__"):
+        if hasattr(inputs, attr):
+            data = getattr(inputs, "data", None)
+            if isinstance(data, dict):
+                return {key: value for key, value in data.items()}
+            if hasattr(inputs, "keys"):
+                try:
+                    return {key: inputs[key] for key in inputs.keys()}
+                except Exception:  # pragma: no cover - defensive
+                    pass
+    if hasattr(inputs, "to"):
+        return {"input": inputs}
+    return {"input": inputs}
+
+
+def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    conversation: List[Dict[str, Any]] = []
+    for message in messages:
+        role = message.get("role", "user")
+        if role not in {"user", "assistant", "system"}:
+            role = "user"
+        text = _ensure_text(message.get("content"))
+        content: List[Dict[str, Any]] = []
+        if text:
+            content.append({"type": "text", "text": text})
+        if role == "system" and not content:
+            continue
+        conversation.append({"role": role, "content": content})
+    return conversation
+
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
