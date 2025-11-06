@@ -78,7 +78,6 @@ const App: React.FC = () => {
   );
   const abortRef = useRef<AbortController | null>(null);
   const pendingIds = useRef<{ userId: string; assistantId: string } | null>(null);
-  const submitLockRef = useRef(false);
 
   useEffect(() => {
     return () => {
@@ -141,16 +140,13 @@ const App: React.FC = () => {
 
   const handleSubmit = async (event: FormEvent) => {
     event.preventDefault();
-    if (isStreaming || submitLockRef.current) {
+    if (isStreaming) {
       return;
     }
-
-    submitLockRef.current = true;
 
     const trimmed = input.trim();
     if (!trimmed && !videoFile) {
       setError("Enter a message or attach a short video.");
-      submitLockRef.current = false;
       return;
     }
 
@@ -162,7 +158,6 @@ const App: React.FC = () => {
         upload = await uploadVideo(videoFile);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
-        submitLockRef.current = false;
         return;
       }
     }
@@ -241,7 +236,6 @@ const App: React.FC = () => {
       pendingIds.current = null;
       abortRef.current = null;
       setIsStreaming(false);
-      submitLockRef.current = false;
     }
   };
 
