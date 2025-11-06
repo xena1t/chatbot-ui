@@ -10,3 +10,4 @@ hf_transfer>=0.1.6
 accelerate>=0.29.0
 ffmpeg-python>=0.2.0
 pillow>=10.0.0
+sentencepiece>=0.1.99
