@@ -120,12 +120,6 @@ def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
             images.append(image.convert("RGB"))
     return images
 
-def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
-    images: List[Any] = []
-    for frame_path in frame_paths:
-        with Image.open(frame_path) as image:
-            images.append(image.convert("RGB"))
-    return images
 
 def _prepare_multimodal_inputs(
     processor: Any,
@@ -141,8 +135,6 @@ def _prepare_multimodal_inputs(
         existing_content = conversation[-1].setdefault("content", [])
         image_items = [{"type": "image", "image": image} for image in images]
         conversation[-1]["content"] = image_items + existing_content
-
-    fallback_prompt: Optional[str] = None
 
     if hasattr(processor, "apply_chat_template"):
         try:
@@ -160,24 +152,14 @@ def _prepare_multimodal_inputs(
                     except TypeError:
                         pass
             return model_inputs
-        except Exception:  # pragma: no cover - processors vary widely
-            try:
-                fallback_prompt = processor.apply_chat_template(
-                    [
-                        {
-                            "role": message.get("role", "user"),
-                            "content": _ensure_text(message.get("content")),
-                        }
-                        for message in conversation
-                    ],
-                    tokenize=False,
-                    add_generation_prompt=True,
-                )
-            except Exception:
-                fallback_prompt = None
-
-    if fallback_prompt is None:
-        fallback_prompt = _format_prompt(
+        except TypeError:
+            prompt = processor.apply_chat_template(
+                conversation,
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+    else:
+        prompt = _format_prompt(
             messages,
             [path.as_posix() for path in frame_paths],
         )
@@ -187,9 +169,9 @@ def _prepare_multimodal_inputs(
         processor_kwargs["images"] = images
 
     try:
-        return processor(fallback_prompt, **processor_kwargs)
+        return processor(prompt, **processor_kwargs)
     except TypeError:
-        processor_kwargs["text"] = [fallback_prompt]
+        processor_kwargs["text"] = [prompt]
         return processor(**processor_kwargs)
 
 
