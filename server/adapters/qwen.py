@@ -19,11 +19,6 @@ try:  # transformers exposes BatchEncoding from tokenization utils
 except ImportError:  # pragma: no cover - version dependent
     BatchEncoding = None  # type: ignore[assignment]
 
-try:  # image processors return BatchFeature in newer releases
-    from transformers.image_processing_utils import BatchFeature
-except ImportError:  # pragma: no cover - optional depending on version
-    BatchFeature = None  # type: ignore[assignment]
-
 try:  # transformers<4.46 does not expose this helper
     from transformers import AutoModelForImageTextToText
 except ImportError:  # pragma: no cover - optional depending on version
@@ -111,35 +106,20 @@ def _coerce_model_inputs(inputs: Any) -> Dict[str, Any]:
         return {}
     if BatchEncoding is not None and isinstance(inputs, BatchEncoding):
         inputs = inputs.data
-    if BatchFeature is not None and isinstance(inputs, BatchFeature):
-        return {key: value for key, value in inputs.items()}
     if isinstance(inputs, dict):
         return {key: value for key, value in inputs.items()}
-    if hasattr(inputs, "items"):
-        try:
-            return {key: value for key, value in inputs.items()}
-        except Exception:  # pragma: no cover - defensive
-            pass
     if isinstance(inputs, (list, tuple)):
         if len(inputs) == 1:
             return _coerce_model_inputs(inputs[0])
         return {f"input_{index}": value for index, value in enumerate(inputs)}
     if isinstance(inputs, torch.Tensor):
         return {"input_ids": inputs}
-    for attr in ("to", "__iter__"):
-        if hasattr(inputs, attr):
-            data = getattr(inputs, "data", None)
-            if isinstance(data, dict):
-                return {key: value for key, value in data.items()}
-            if hasattr(inputs, "keys"):
-                try:
-                    return {key: inputs[key] for key in inputs.keys()}
-                except Exception:  # pragma: no cover - defensive
-                    pass
     if hasattr(inputs, "to"):
         return {"input": inputs}
     return {"input": inputs}
 
+    segments.append("Assistant:")
+    return "\n".join(segments).strip() + "\n"
 
 def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     conversation: List[Dict[str, Any]] = []
@@ -156,8 +136,6 @@ def _build_conversation(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         conversation.append({"role": role, "content": content})
     return conversation
 
-    segments.append("Assistant:")
-    return "\n".join(segments).strip() + "\n"
 
 def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
     images: List[Any] = []
@@ -402,13 +380,6 @@ def _maybe_initialize_vision_model(model: PreTrainedModel, processor: Any, token
             setattr(model, "tokenizer", tokenizer)
         except Exception:  # pragma: no cover - defensive
             logger.debug("Unable to attach tokenizer to model", exc_info=True)
-
-    language_model = getattr(model, "language_model", None)
-    if isinstance(language_model, PreTrainedModel) and not hasattr(language_model, "generate"):
-        try:
-            setattr(language_model.__class__, "generate", PreTrainedModel.generate)
-        except Exception:  # pragma: no cover - defensive
-            logger.debug("Unable to attach generate() to language model", exc_info=True)
 
     if not hasattr(model, "img_context_token_id"):
         return
@@ -709,11 +680,6 @@ async def stream_chat_completion(
 
     encoded = await asyncio.to_thread(_encode)
     encoded = _coerce_model_inputs(encoded)
-    if "input" in encoded and "input_ids" not in encoded:
-        candidate = encoded["input"]
-        if isinstance(candidate, torch.Tensor):
-            encoded["input_ids"] = candidate
-            del encoded["input"]
 
     tokenizer = bundle.tokenizer
 
