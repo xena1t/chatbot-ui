@@ -120,6 +120,12 @@ def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
             images.append(image.convert("RGB"))
     return images
 
+def _load_images(frame_paths: Sequence[Path]) -> List[Any]:
+    images: List[Any] = []
+    for frame_path in frame_paths:
+        with Image.open(frame_path) as image:
+            images.append(image.convert("RGB"))
+    return images
 
 def _prepare_multimodal_inputs(
     processor: Any,
