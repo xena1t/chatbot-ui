@@ -57,9 +57,9 @@ Copy `.env.example` into `.env` (or configure via RunPod UI). Important variable
 | `MODEL_NAME` | Hugging Face identifier for Qwen | `Qwen/Qwen3-VL-32B-Instruct` |
 | `TRANSFORMERS_DEVICE` | Target device (`auto`, `cuda`, or `cpu`) | `auto` |
 | `CORS_ORIGIN` | Comma-separated list of allowed origins (`*` for dev) | `*` |
-| `MAX_VIDEO_SECONDS` | Maximum upload duration | `30` |
-| `MAX_VIDEO_MB` | Maximum upload size | `50` |
-| `FRAME_COUNT` | Frames sampled per video | `8` |
+| `MAX_VIDEO_SECONDS` | Maximum upload duration | `60` |
+| `MAX_VIDEO_MB` | Maximum upload size | `100` |
+| `FRAME_COUNT` | Frames sampled per video | `32` |
 | `FRAME_MAX_W` / `FRAME_MAX_H` | Max resolution for frames | `1280x720` |
 
 `RUNPOD_PERSISTENT_DIR` is automatically discovered; uploads and frames live in
@@ -117,13 +117,13 @@ model, and serves the React application alongside `/api/upload`,
   - Responds with `{ "video_url": "/static/uploads/<uuid>.mp4", "duration_s": 12.3 }`.
 - `POST /api/chat/stream`
   - Body: `{ messages: [{role, content}, ...], params?: {...}, video_url?: "..." }`.
-  - Extracts ~8 uniformly sampled frames, publishes them as `/static/frames/<id>/frame_xx.jpg`.
+  - Extracts ~32 uniformly sampled frames, publishes them as `/static/frames/<id>/frame_xx.jpg`.
   - Streams SSE events: `frames` (array of public URLs), `token` (delta text),
     optional `error`, then `data: [DONE]` when complete.
 
 ## Frontend workflow
 
-1. User types a prompt and optionally selects a video (MP4/MOV ≤ 30s).
+1. User types a prompt and optionally selects a video (MP4/MOV ≤ 60s, ≤ 100MB).
 2. The video is uploaded to `/api/upload`.
 3. The chat history and optional `video_url` are posted to `/api/chat/stream`.
 4. The client consumes the SSE stream, updates the assistant message in real-time,
