@@ -317,7 +317,11 @@ const App: React.FC = () => {
             <div className="controls">
               <div className="file-input">
                 <label className="file-label">
-                  <span>{videoFile ? videoFile.name : "Attach MP4/MOV (≤30s)"}</span>
+                  <span>
+                    {videoFile
+                      ? videoFile.name
+                      : "Attach MP4/MOV (≤60s, ≤100MB)"}
+                  </span>
                   <input
                     type="file"
                     accept="video/mp4,video/quicktime"

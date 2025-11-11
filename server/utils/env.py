@@ -67,9 +67,9 @@ def get_settings() -> Settings:
         directory.mkdir(parents=True, exist_ok=True)
 
     cors_origin = os.getenv("CORS_ORIGIN", "*")
-    max_video_seconds = int(os.getenv("MAX_VIDEO_SECONDS", "30"))
-    max_video_mb = int(os.getenv("MAX_VIDEO_MB", "50"))
-    frame_count = int(os.getenv("FRAME_COUNT", "8"))
+    max_video_seconds = int(os.getenv("MAX_VIDEO_SECONDS", "60"))
+    max_video_mb = int(os.getenv("MAX_VIDEO_MB", "100"))
+    frame_count = int(os.getenv("FRAME_COUNT", "32"))
     frame_max_w = int(os.getenv("FRAME_MAX_W", "1280"))
     frame_max_h = int(os.getenv("FRAME_MAX_H", "720"))
 
